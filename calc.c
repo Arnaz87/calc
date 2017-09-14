@@ -34,16 +34,19 @@ void prepareargs () {
 	word = argv[0];
 }
 
-int ch;
+int ch = 0;
 int iseof = 0;
-void nextchar () {
-	if (iseof) return;
+char getnextchchar () {
+	if (iseof) return 0;
 	if (!argv) {
-		ch = getchar();
-		iseof = ch==EOF;
-		return;
+		int ch = getchar();
+		if (ch==EOF) {
+			iseof = 1;
+			return 0;
+		}
+		return (char) ch;
 	}
-	ch = word[0];
+	char ch = word[0];
 	word++; // Siguiente letra
 	if (ch == '\0') {
 		ch = ' ';
@@ -52,9 +55,15 @@ void nextchar () {
 		word = argv[0];
 		iseof = argc < 1;
 	}
+	return ch;
 }
 
-void stripspace () { while ((ch == ' ' || ch == '\t') && !iseof) nextchar(); }
+// Asegurar que haya un caracter leído
+void ensurech () { if (!ch) ch = getnextchchar(); }
+// Descartar el caracter actual para poder pasar al siguiente
+void consumech () { ch = 0; }
+// Descartar lo que sea que haya y psar al siguiente caracter
+void nextch () { ch = getnextchchar(); }
 
 typedef struct {
 	char kind; // w: word, v: value, f: function, \0: no token
@@ -62,11 +71,10 @@ typedef struct {
 	char str[16];
 } Token;
 
-Token token1 = { .kind = 0 };
-Token token2 = { .kind = 0 };
+Token token = { .kind = 0 };
 
 int readhex () {
-	nextchar();
+	nextch(); // el caracter leído es la 'x' de "0x"
 	int n = 0;
 	while (1) {
 		int d = -1;
@@ -78,13 +86,13 @@ int readhex () {
 			d = ch-'A'+10;
 		if (d == -1) break;
 		n = n*16+ d;
-		nextchar();
+		nextch();
 	}
 	return n;
 }
 
 int readbin () {
-	nextchar();
+	nextch(); // el caracter leído es la 'b' de "0b"
 	int n = 0;
 	while (1) {
 		if (ch == '0')
@@ -92,14 +100,15 @@ int readbin () {
 		else if (ch == '1')
 			n = n*2+1;
 		else return n;
-		nextchar();
+		nextch();
 	}
 }
 
 float readvalue () {
 	int n = 0;
+	ensurech();
 	if (ch == '0') {
-		nextchar();
+		nextch();	
 		if (ch == 'x')
 			return (float) readhex();
 		if (ch == 'b')
@@ -113,12 +122,11 @@ float readvalue () {
 		n = n*10 + (ch - '0');
 		if (st==1) { div *= 10; }
 		if (st==2) { period *= 10; }
-		nextchar();
-		if (ch == '_') nextchar();
-		if (ch == '.') { st=1; nextchar(); }
-		if (ch == '\'') { st=2; nextchar(); }
+		nextch();
+		if (ch == '_') nextch();
+		if (ch == '.') { st=1; nextch(); }
+		if (ch == '\'') { st=2; nextch(); }
 	}
-	stripspace();
 	if (period > 1) {
 		n -= n/period;
 		period--;
@@ -128,8 +136,12 @@ float readvalue () {
 }
 
 void readtoken (Token *token) {
-	stripspace();
-	if (iseof) {
+	ensurech();
+
+	// strip space
+	while (ch == ' ') nextch();
+
+	if ( iseof ) {
 		token->kind = 0;
 		return;
 	}
@@ -146,7 +158,7 @@ void readtoken (Token *token) {
 	int count = 0;
 	while (ch >= 'a' && ch <= 'z') {
 		token->str[count++] = (char) ch;
-		nextchar();
+		nextch();
 	}
 
 	if (count) {
@@ -154,16 +166,13 @@ void readtoken (Token *token) {
 		token->kind = 'w';
 	} else {
 		token->kind = (char) ch;
-		nextchar();
+		consumech();
 	}
 }
 
-void poptoken () {
-	if (token1.kind) {
-		token1 = token2;
-		readtoken(&token2);
-	}
-}
+void ensuretk () { if (!token.kind) readtoken(&token); }
+void consumetk () { token.kind = 0; }
+void nexttk () { readtoken(&token); }
 
 char ops[16];
 int opc = 0;
@@ -175,26 +184,28 @@ void execop ();
 void dovalue () {
 	float sign = 1;
 	Value value;
-	if (token1.kind == '-') {
+	ensuretk();
+	if (token.kind == '-') {
 		sign = -1;
-		poptoken();
+		nexttk();
 	}
-	if (token1.kind == 'n') {
-		value = token1.value;
+	if (token.kind == 'n') {
+		value = token.value;
 		value.unit = unitless;
 		value.v *= sign;
-		poptoken();
+		nexttk();
 	} else {
 		printf("Expected value\n");
 		exit(1);
 	}
 
-	if (token1.kind == 'w') {
+	if (token.kind == 'w') {
 		float v = value.v;	
 		#define KW(W, U, X) \
-			if (strcmp(token1.str, W) == 0) {\
-				poptoken();\
+			if (strcmp(token.str, W) == 0) {\
 				value.v = X;\
+				consumetk();\
+				goto end;\
 			}
 		KW("mm", distance, v/1000);
 		KW("cm", distance, v/100);
@@ -209,6 +220,7 @@ void dovalue () {
 		KW("rad",angle, v/3.141592);
 		#undef KW
 	}
+end:
 	values[valuec++] = value;
 }
 
@@ -240,45 +252,48 @@ void execop () {
 }
 
 void dobinop () {
-	int fail = 0;
-	switch (token1.kind) {
+	int match = 0;
+	ensuretk();
+	switch (token.kind) {
 		case '+':
 		case '-':
 		case '*':
-		case '/': fail = 1;
+		case '/': match = 1;
 	}
-	if (!fail) {
+	if (!match) {
 		fprintf(stderr, "Expected operator\n");
 		exit(1);
 	}
-	int p = precedence(token1.kind);
+	int p = precedence(token.kind);
 	while (p <= precedence(ops[opc-1]))
 		execop();
-	ops[opc++] = token1.kind;
-	poptoken();
+	ops[opc++] = token.kind;
+	consumetk();
 }
 
 Value doline () {
 	// El '(' original...
 	ops[opc++] = '(';
-
+	
 	goto first;
-	while (token1.kind) {
+	while (token.kind) {
 		dobinop();
 	first:
-		while (token1.kind == '(') {
+		ensuretk();
+		while (token.kind == '(') {
 			ops[opc++] = '(';
-			poptoken();
+			nexttk();
 		}
 		dovalue();
-		while (token1.kind == ')') {
+		ensuretk();
+		while (token.kind == ')') {
 			while (ops[opc-1] != '(')
 				execop();
 			// Se eliminaron todos los operadores, queda el '('
 			opc--;
-			poptoken();
+			nexttk();
 		}
-		if (token1.kind == '!') {
+		if (token.kind == '!') {
 			int i=0;
 			printf("ops:");
 			while (i < opc) printf(" %c", ops[i++]);
@@ -286,7 +301,11 @@ Value doline () {
 			i=0; while(i < valuec)
 				printf(" %.2f", values[i++].v);
 			printf("\n");
-			poptoken();
+			nexttk();
+		}
+		if (token.kind == '\n' || token.kind == ';') {
+			consumetk();
+			break;
 		}
 	}
 	// Hasta que quede un operador: el '(' original!
@@ -300,22 +319,24 @@ void main (int in_argc, char** in_argv) {
 	argv = in_argv;
 
 	prepareargs();
+
+	readtoken(&token);
 	
-	nextchar(); // Leer el primer caracter.
-	stripspace();
-
-	readtoken(&token1);
-	readtoken(&token2);
-
-	/*switch (token2.kind) {
-		case 'w': printf("w: %s\n", token2.str); break;
-		case 'f': printf("f: %s\n", token2.str); break;
-		case 'n': printf("n: %f\n", token2.value.v); break;
-		default: printf("char: %c\n", token2.kind);
+	/*while (token.kind) {
+		switch (token.kind) {
+			case 'w': printf("w: %s\n", token.str); break;
+			case 'f': printf("f: %s\n", token.str); break;
+			case 'n': printf("n: %f\n", token.value.v); break;
+			default: printf("char: %c\n", token.kind);
+		}
+		nexttk();
 	}*/
-
-	Value v = doline();
-	printf("%f\n", v.v);
+	
+	while (token.kind) {
+		Value v = doline();
+		printf("%f\n", v.v);
+		ensuretk();
+	}
 }
 
 
