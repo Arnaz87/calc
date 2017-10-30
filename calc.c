@@ -7,7 +7,7 @@ enum Unit {
 	angle, // radian
 	distance, // metro
 	area, // metro2
-	volume, // metro3 / litro
+	volume, // litro
 	speed, // kmph
 	mass, // kg
 	time, // seg
@@ -17,8 +17,27 @@ enum Unit {
 
 typedef struct {
 	enum Unit unit;
-	float v;
+	int num;
+	int denom;
 } Value;
+
+void simplify (Value *value) {
+	int a = value->num;
+	int b = value->denom;
+	if (a<0) a *= -1;
+	if (b<0) b *= -1;
+	while (b != 0) {
+		int t = b;
+		b = a%b;
+		a = t;
+	}
+	int gcd = a;
+	value->num /= gcd;
+	value->denom /= gcd;
+	if (value->denom < 0)
+		value->num *= -1;
+}
+
 
 int argc = 0;
 char **argv = NULL;
@@ -73,7 +92,7 @@ typedef struct {
 
 Token token = { .kind = 0 };
 
-int readhex () {
+void readhex (Value *value) {
 	nextch(); // el caracter leído es la 'x' de "0x"
 	int n = 0;
 	while (1) {
@@ -88,10 +107,11 @@ int readhex () {
 		n = n*16+ d;
 		nextch();
 	}
-	return n;
+	value->num = n;
+	value->denom = 1;
 }
 
-int readbin () {
+void readbin (Value *value) {
 	nextch(); // el caracter leído es la 'b' de "0b"
 	int n = 0;
 	while (1) {
@@ -99,31 +119,39 @@ int readbin () {
 			n = n*2;
 		else if (ch == '1')
 			n = n*2+1;
-		else return n;
+		else break;
 		nextch();
 	}
+	value->num = n;
+	value->denom = 1;
 }
 
-float readvalue () {
+void readvalue (Value *value) {
 	int n = 0;
 	ensurech();
 	if (ch == '0') {
 		nextch();	
-		if (ch == 'x')
-			return (float) readhex();
-		if (ch == 'b')
-			return (float) readbin();
+		if (ch == 'x') {
+			readhex(value);
+			return;
+		}
+		if (ch == 'b') {
+			readbin(value);
+			return;
+		}
 	}
 	int div = 1;
 	int period = 1;
 	// 0: int, 1: decimal, 2: period
 	char st = 0;
+	goto point;
 	while (ch >= '0' && ch <= '9') {
 		n = n*10 + (ch - '0');
 		if (st==1) { div *= 10; }
 		if (st==2) { period *= 10; }
 		nextch();
 		if (ch == '_') nextch();
+point:
 		if (ch == '.') { st=1; nextch(); }
 		if (ch == '\'') { st=2; nextch(); }
 	}
@@ -132,7 +160,9 @@ float readvalue () {
 		period--;
 	}
 	int denom = div*period;
-	return (float) n/denom;
+
+	value->num = n;
+	value->denom = denom;
 }
 
 void readtoken (Token *token) {
@@ -147,9 +177,8 @@ void readtoken (Token *token) {
 	}
 
 	if (ch >= '0' && ch <= '9') {
-		float val = readvalue();
+		readvalue(&token->value);
 		token->kind = 'n';
-		token->value.v = val;
 		token->value.unit = unitless;
 		return;
 	}
@@ -192,7 +221,7 @@ void dovalue () {
 	if (token.kind == 'n') {
 		value = token.value;
 		value.unit = unitless;
-		value.v *= sign;
+		value.num *= sign;
 		nexttk();
 	} else {
 		printf("Expected value\n");
@@ -200,28 +229,30 @@ void dovalue () {
 	}
 
 	if (token.kind == 'w') {
-		float v = value.v;	
-		#define KW(W, U, X) \
+		#define KW(W, U, N, D) \
 			if (strcmp(token.str, W) == 0) {\
-				value.v = X;\
+				value.unit = U;\
+				value.num *= N;\
+				value.denom *= D;\
 				consumetk();\
 				goto end;\
 			}
-		KW("mm", distance, v/1000);
-		KW("cm", distance, v/100);
-		KW("m",  distance, v);
-		KW("km", distance, v*1000);
-		KW("g",  mass, v/1000);
-		KW("kg", mass, v);
-		KW("s",  time, v);
-		KW("min",time, v*60);
-		KW("h",  time, v*3600);
-		KW("day",time, v*3600*24);
-		KW("rad",angle, v/3.141592);
+		KW("mm", distance, 1, 1000);
+		KW("cm", distance, 1, 100);
+		KW("m",  distance, 1, 1);
+		KW("km", distance, 1000, 1);
+		KW("g",  mass, 1, 1000);
+		KW("kg", mass, 1, 1);
+		KW("s",  time, 1, 1);
+		KW("min",time, 60, 1);
+		KW("h",  time, 3600, 1);
+		KW("day",time, 3600*24, 1);
+		KW("rad",angle, 355, 113);
 		#undef KW
 	}
 end:
-	values[valuec++] = value;
+	simplify(&value);
+	values[valuec++] = value; 
 }
 
 int precedence (char op) {
@@ -243,11 +274,24 @@ void execop () {
 	Value a = values[--valuec];
 	Value r;
 	switch (op) {
-		case '+': r.v = a.v + b.v; break;
-		case '-': r.v = a.v - b.v; break;
-		case '*': r.v = a.v * b.v; break;
-		case '/': r.v = a.v / b.v; break;
+		case '+':
+			r.num = a.num*b.denom + a.denom*b.num;
+			r.denom = a.denom*b.denom;
+			break;
+		case '-':
+			r.num = a.num*b.denom - a.denom*b.num;
+			r.denom = a.denom*b.denom;
+			break;
+		case '*':
+			r.num = a.num * b.num;
+			r.denom = a.denom * b.denom;
+			break;
+		case '/':
+			r.num = a.num * b.denom;
+			r.denom = a.denom * b.num;
+			break;
 	}
+	simplify(&r);
 	values[valuec++] = r;
 }
 
@@ -261,7 +305,7 @@ void dobinop () {
 		case '/': match = 1;
 	}
 	if (!match) {
-		fprintf(stderr, "Expected operator\n");
+		fprintf(stderr, "Expected operator %c\n", token.kind);
 		exit(1);
 	}
 	int p = precedence(token.kind);
@@ -299,7 +343,7 @@ Value doline () {
 			while (i < opc) printf(" %c", ops[i++]);
 			printf("\nvalues:");
 			i=0; while(i < valuec)
-				printf(" %.2f", values[i++].v);
+				printf(" %d¬%d", values[i++].num, values[i].denom);
 			printf("\n");
 			nexttk();
 		}
@@ -334,7 +378,7 @@ void main (int in_argc, char** in_argv) {
 	
 	while (token.kind) {
 		Value v = doline();
-		printf("%f\n", v.v);
+		printf("%g\n", (double)v.num/v.denom );
 		ensuretk();
 	}
 }
