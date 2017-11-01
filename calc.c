@@ -2,6 +2,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Bigint en JS en el dominio público
+// https://github.com/Evgenus/BigInt/blob/master/src/BigInt.js
+
+// Otra librería JS
+// https://github.com/silentmatt/javascript-biginteger
+
+// Números reales basado en la librería anterior
+// https://github.com/jtobey/javascript-bignum
+
 enum Unit {
 	unitless,
 	angle, // radian
@@ -37,7 +46,6 @@ void simplify (Value *value) {
 	if (value->denom < 0)
 		value->num *= -1;
 }
-
 
 int argc = 0;
 char **argv = NULL;
@@ -268,6 +276,59 @@ int precedence (char op) {
 	}
 }
 
+// Exponenciación racional
+void exp (Value *value, int e) {
+	if (e == 0) {
+		value->num = 1;
+		value->denom = 1;
+	}
+
+	int neg = e < 0;
+	if (neg) e = -e;
+
+	while (--e > 0) {
+		value->num *= value->num;
+		value->denom *= value->denom;
+	}
+
+	if (neg) {
+		int temp = value->num;
+		value->num = value->denom;
+		value->denom = temp;
+	}
+}
+
+int pow (int b, int n) {
+	int r = 1;
+	while (--b > 0) {
+		r *= b;
+	}
+	return r;
+}
+
+void root (Value *value, int n) {
+	if (n == 1) return;
+	if (value->num < 0) {
+		value->num = 1;
+		value->denom = 0;
+		return;
+	}
+
+	int floored = value->num / value->denom;
+	int lastdiff = floored;
+	int guess = 1;
+	while (1) {
+		int thisguess = pow(guess, n);
+		int diff = thisguess - floored;
+		if (diff < lastdiff) {
+			lastdiff = diff;
+			guess++;
+		} else break;
+	}
+	value->num = guess;
+	value->denom = 1;
+}
+
 void execop () {
 	char op = ops[--opc];
 	Value b = values[--valuec];
@@ -290,6 +351,11 @@ void execop () {
 			r.num = a.num * b.denom;
 			r.denom = a.denom * b.num;
 			break;
+		case '^':
+			r = a;
+			exp(&r, b.num);
+			//root(&r, b.denom);
+			break;
 	}
 	simplify(&r);
 	values[valuec++] = r;
@@ -302,7 +368,9 @@ void dobinop () {
 		case '+':
 		case '-':
 		case '*':
-		case '/': match = 1;
+		case '/':
+		case '^':
+			match = 1;
 	}
 	if (!match) {
 		fprintf(stderr, "Expected operator %c\n", token.kind);
