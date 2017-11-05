@@ -38,6 +38,24 @@ typedef struct {
 } Value;
 
 typedef struct {
+	int len;
+	Value *p;
+} Vector;
+
+struct Object;
+
+typedef struct Object {
+	// n: Número, v: Vector, f: Función
+	char kind; 
+	union {
+		Value n;
+		Vector v;
+		struct Object (*f)();
+	} _;
+} Object;
+
+
+typedef struct {
 	char kind;
 	Value n;
 	char *str;
@@ -310,7 +328,7 @@ Expr parse_expr () {
 				break;
 			default:
 				error("Expected operator");
-				return expr;
+				goto clear;
 		}
 
 		int p = precedence(token.kind);
@@ -329,10 +347,11 @@ Expr parse_expr () {
 			items[itemc].n = parse_value();
 			items[itemc++].kind = 'n';
 		} else if (token.kind == 'w') {
+			char *str = token.str;
 			nexttk();
 			if (token.kind == '(') {
 				nexttk();
-				calls[callc].str = token.str;
+				calls[callc].str = str;
 				ops[opc++] = 'f';
 				if (token.kind == ')') { 
 					calls[callc++].args = 0;
@@ -341,7 +360,7 @@ Expr parse_expr () {
 					goto valstate;
 				}
 			} else {
-				items[itemc].str = token.str;
+				items[itemc].str = str;
 				items[itemc++].kind = 'v';
 			}
 		}
@@ -350,7 +369,7 @@ Expr parse_expr () {
 			while (precedence(ops[opc-1]) > 0) pushop();
 			if (opc < 2) {
 				error("Unmatched closing parenthesis");
-				return expr;
+				goto clear;
 			}
 			char op = ops[opc-1];
 			if (op == 'f') {
@@ -365,13 +384,13 @@ Expr parse_expr () {
 		}
 
 		if (token.kind == ',') {
+			nexttk();
 			while (precedence(ops[opc-1])) pushop();
 			if (ops[opc-1] != 'f') {
 				error("Misplaced comma");
-				return expr;
+				goto clear;
 			}
 			calls[callc-1].args++;
-			nexttk();
 			goto valstate;
 		}
 
@@ -380,14 +399,26 @@ Expr parse_expr () {
 			break;
 		}
 	}	
-	while (opc > 1) pushop();
+	while (opc > 1 && precedence(ops[opc-1])) pushop();
+	if (opc > 1) {
+		error("Unclosed parenthesis");
+		return expr;
+	}
 	#undef pushop
 
 	int bytes = itemc * sizeof(Item);
 	expr.items = malloc(bytes);
 	memcpy(expr.items, items, bytes);
 	expr.len = itemc;
+	return expr;
 
+clear:
+	while(token.kind) {
+		if (token.kind == '\n' || token.kind == ';') {
+			consumetk();
+			break;
+		} else nexttk();
+	}
 	return expr;
 }
 
@@ -397,118 +428,218 @@ Expr parse_expr () {
 
 //=== Exec ===//
 
-Value V0 = (Value){unitless, 0};
+//Object V0 = (Value){unitless, 0};
 
-Value callstack[16];
+Object callstack[16];
 int stacklen = 0;
 
-Value my_log () {
-	if (stacklen < 1 || stacklen > 2) {
-		error("Argument mismatch");
+#define CHK_K(N, T) callstack[N].kind == T
+#define VALUE(N) (Object){.kind = 'n', ._ = {.n = {.n = N}}}
+#define GET_N(I) callstack[I]._.n.n
+
+Object V0 = VALUE(0);
+
+Object my_log () {
+	if (stacklen < 1 || stacklen > 2 || !CHK_K(0, 'n') || stacklen==2 && !CHK_K(1, 'n')) {
+		error("Incorrect arguments");
 		return V0;
 	}
-	double x = callstack[0].n;
-	double b = stacklen>1? callstack[1].n : 10;
+	double x = GET_N(0);
+	double b = stacklen>1? GET_N(1) : 10;
 	double r = log(x)/log(b);
-	return (Value){.n = r};
+	return VALUE(r);
 }
 
-Value my_sin () {
-	if (stacklen != 1) {
+Object my_sin () {
+	if (stacklen != 1 || !CHK_K(0, 'n')) {
 		error("Argument mismatch");
 		return V0;
 	}
-	return (Value){.n = sin(callstack[0].n)};
+	double n = GET_N(0);
+	return VALUE(sin(n));
 }
 
-Value my_cos () {
-	if (stacklen != 1) {
+Object my_cos () {
+	if (stacklen != 1 || !CHK_K(0, 'n')) {
 		error("Argument mismatch");
 		return V0;
 	}
-	return (Value){.n = cos(callstack[0].n)};
+	double n = GET_N(0);
+	return VALUE(cos(n));
 }
 
-Value my_tan () {
-	if (stacklen != 1) {
+Object my_tan () {
+	if (stacklen != 1 || !CHK_K(0, 'n')) {
 		error("Argument mismatch");
 		return V0;
 	}
-	return (Value){.n = tan(callstack[0].n)};
+	double n = GET_N(0);
+	return VALUE(tan(n));
 }
 
-typedef Value (*ftype)();
+Object gcd () {
+	if (stacklen == 1 && CHK_K(0, 'r')) {
+		error("GCD of arrays unsupported");
+		return V0;
+	}
+	if (stacklen < 1) {
+		error("At least one argument required");
+		return V0;
+	}
+	if (!CHK_K(0, 'n')) {
+		error("Only number arguments");
+		return V0;
+	}
+	int r = GET_N(0);
+	if (r<0) r*=-1;
+	int i;
+	for (i=1; i<stacklen; i++) {
+		if (!CHK_K(i, 'n')) {
+			error("Only number arguments");
+			return V0;
+		}
+		int a = GET_N(i);
+		if (a<0) a*=-1;
+		while (a != 0) {
+			int tmp = a;
+			a = r%a;
+			r = tmp;
+		}
+	}
+	return VALUE(r);
+}
+
+Object vector () {
+	Vector vec;
+	vec.p = malloc(stacklen * sizeof(Value));
+	vec.len = stacklen;
+	int i;
+	for(i=0; i < stacklen; i++) {
+		if (!CHK_K(i, 'n')) {
+			error("Vectors can only contain numbers");
+			free(vec.p);
+			return V0;
+		}
+		vec.p[i] = callstack[i]._.n;
+	}
+	return (Object){.kind = 'v', ._.v = vec};
+}
+
+Object range () {
+	double low=1, high=1, step=1;
+	if (stacklen == 1 && CHK_K(0, 'n')) {
+		high = GET_N(0);
+	} else if (stacklen == 2 && CHK_K(0, 'n') && CHK_K(1, 'n')) {
+		low = GET_N(0);
+		high = GET_N(1);
+	} else if (stacklen == 3 && CHK_K(0,'n') && CHK_K(1,'n') && CHK_K(2,'n')) {
+		low = GET_N(0);
+		high = GET_N(1);
+		step = GET_N(2);
+	}
+	if (step == 0) {
+		error("Step cannot be 0");
+		return V0;
+	}
+	if (step < 0) step *= -1;
+	if (high < low) step *= -1;
+	Vector vec;
+	vec.len = 1 + (high - low) / step;
+	vec.p = malloc(vec.len * sizeof(Value));
+	double n = low;
+	int i = 0;
+	while (i<vec.len) {
+		vec.p[i++].n = n;
+		n += step;
+	}
+	return (Object){.kind = 'v', ._.v = vec};
+}
+
+typedef Object (*ftype)();
+#define FUNCTION(F) (Object){.kind = 'f', ._ = {.f = F}}
 
 struct {
 	char *key;
-	ftype f;
-} funcs[] = {
-	{"log", my_log},
-	{"sin", my_sin},
-	{"cos", my_cos},
-	{"tan", my_tan}
+	Object o;
+} consts[] = {
+	{"log", FUNCTION(my_log)},
+	{"sin", FUNCTION(my_sin)},
+	{"cos", FUNCTION(my_cos)},
+	{"tan", FUNCTION(my_tan)},
+	{"gcd", FUNCTION(gcd)},
+	{"mcd", FUNCTION(gcd)},
+	{"pi", VALUE(3.14159265)},
+	{"vec", FUNCTION(vector)},
+	{"vector", FUNCTION(vector)},
+	{"range", FUNCTION(range)}
 };
 
-int fcount = sizeof(funcs) / sizeof(*funcs);
+int const_count = sizeof(consts) / sizeof(*consts);
 
-Value eval_expr (Expr expr) {
+Object eval_expr (Expr expr) {
 	int pos = 0;
-	Value stack[30];
+	Object stack[30];
 
 	int i = 0;
 	while (i < expr.len) {
 		Item item = expr.items[i++];
 
 		if (item.kind == 'n') {
-			stack[pos++] = item.n;
+			stack[pos++] = (Object){kind: 'n', ._.n = item.n};
 			continue;
 		}
-		if (item.kind == 'v') {
-			if (strcmp(item.str, "pi") == 0) {
-				stack[pos++].n = 3.14159265;
+		if (item.kind == 'f' || item.kind == 'v') {
+			Object v = {.kind = 0};
+			int i;
+			for(i=0; i < const_count; i++) {
+				if (strcmp(consts[i].key, item.str) == 0)
+					v = consts[i].o;
+			}
+			if (v.kind == 0) {
+				error("Unknown constant %s", item.str);
+				return V0;
+			}
+			if (item.kind == 'v') {
+				stack[pos++] = v;
 				continue;
-			}
-			error("Unknown variable %s", item.str);
-			return V0;
-		}
-		if (item.kind == 'f') {
-			//printf("f: %s(%d)\n", item.str, item.args); return V0;
-			int i = 0;
-			ftype f = 0;
-			for(i=0; i<fcount; i++) {
-				if (strcmp(funcs[i].key, item.str) == 0)
-					f = funcs[i].f;
-			}
-			if (!f) {
-				error("Unknown function %s", item.str);
+			} // item.kind == 'f'
+			if (v.kind != 'f') {
+				error("%s is not a function", item.str);
 				return V0;
 			}
 			stacklen = 0;
 			pos -= item.args;
 			while (stacklen < item.args)
 				callstack[stacklen++] = stack[pos + stacklen];
-			stack[pos++] = f();
+			stack[pos++] = v._.f();
 			stacklen = 0;
 			continue;
 		}
-		Value a = stack[--pos];
-		Value b = stack[--pos];
-		Value r;
+
+		Object b = stack[--pos];
+		Object a = stack[--pos];
+
+		if (b.kind != 'n' && a.kind != 'n') {
+			error("Operands are not numbers");
+			return V0;
+		}
+
+		Object r = {.kind = 'n'};
 		switch (item.kind) {
 			case '+':
-				r.n = a.n + b.n;
+				r._.n.n = a._.n.n + b._.n.n;
 				break;
 			case '-':
-				r.n = a.n - b.n;
+				r._.n.n = a._.n.n - b._.n.n;
 				break;
 			case '*':
-				r.n = a.n * b.n;
+				r._.n.n = a._.n.n * b._.n.n;
 				break;
 			case '/':
-				r.n = a.n / b.n;
+				r._.n.n = a._.n.n / b._.n.n;
 				break;
 			case '^':
-				r.n = pow(a.n, b.n);
+				r._.n.n = pow(a._.n.n, b._.n.n);
 				break;
 			default:
 				error("Unknown operator %c", item.kind);
@@ -534,8 +665,17 @@ void main (int in_argc, char** in_argv) {
 		/*printf("expr: ");
 		int i;for(i=0;i<expr.len;i++) printf("%c ",expr.items[i]);
 		printf("\n");*/
-		Value v = eval_expr(expr);
-		printf("%g\n", v.n);
+		Object v = eval_expr(expr);
+		if (v.kind == 'n') printf("%g\n", v._.n.n);
+		else if (v.kind == 'v') {
+			printf("[");
+			int i = 0;
+			while (i<v._.v.len) {
+				if (i>0) printf(", ");
+				printf("%g", v._.v.p[i++].n);
+			}
+		       	printf("]\n");
+		}
 		ensuretk();
 	}
 }
