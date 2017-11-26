@@ -46,7 +46,7 @@ struct Object;
 
 typedef struct Object {
 	// n: Número, v: Vector, f: Función
-	char kind; 
+	char kind;
 	union {
 		Value n;
 		Vector v;
@@ -56,6 +56,7 @@ typedef struct Object {
 
 
 typedef struct {
+	// n: Número, v: Variable, f: Función (Invocación)
 	char kind;
 	Value n;
 	char *str;
@@ -213,9 +214,22 @@ void readtoken () {
 	// Intentar leer un nombre
 	int count = 0;
 	char str[32];
-	while (ch >= 'a' && ch <= 'z') {
-		str[count++] = (char) ch;
-		nextch();
+
+	#define IS_WORD (ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch == '_')
+
+	if (count == 0) {
+		while (IS_WORD) {
+			str[count++] = (char) ch;
+			nextch();
+		}
+	}
+	if (count == 0) {
+		while (!IS_WORD && !(ch >= '0' && ch <= '9') &&
+			ch != ' ' && ch != '\n' && ch != '\t' &&
+			ch != ',' && ch != '(' && ch != ')') {
+			str[count++] = (char) ch;
+			nextch();
+		}
 	}
 
 	if (count) {
@@ -283,18 +297,32 @@ end:
 	return value; 
 }
 
-int precedence (char op) {
-	#define OP(C, P) case C: return P;
-	switch (op) {
-	OP('(', 0)
-	OP(')', 0)
-	OP('f', 0)
-	OP('+', 1)
-	OP('-', 1)
-	OP('*', 2)
-	OP('/', 2)
-	OP('^', 3)
-	}
+int precedence (char *op) {
+	#define OP(C, P) if (!strcmp(op, C)) return P;
+	OP("(", 0)
+	OP(")", 0)
+	OP("f", 0)
+
+	OP("=", 1)
+	OP("<", 1)
+	OP(">", 1)
+	OP("<=", 1)
+	OP(">=", 1)
+	OP("!=", 1)
+
+	OP("+", 2)
+	OP("-", 2)
+
+	OP("*", 3)
+	OP("/", 3)
+
+	OP("div", 3)
+	OP("mod", 3)
+	OP("rem", 3)
+
+	OP("^", 4)
+	OP("**", 4)
+	return -1;
 }
 
 Expr parse_expr () {
@@ -303,43 +331,36 @@ Expr parse_expr () {
 	expr.len = 0;
 
 	Item items[100];
-	char ops[30];
+	char *ops[30];
 	struct {
 		char* str;
 		int args;
 	} calls[16];
 	int itemc=0, opc=0, callc=0;
 
-	#define pushop() items[itemc++].kind = ops[--opc]
+	#define pushop() items[itemc++] = (Item){.kind = 'f', .args = 2, .str = ops[--opc]}
 
 	// Para que los operadores no se salgan
-	ops[opc++] = '(';
+	ops[opc++] = "(";
 
 	ensuretk();
 
 	goto valstate;
 	while (token.kind) {
-		switch (token.kind) {
-			case '+':
-			case '-':
-			case '*':
-			case '/':
-			case '^':
-				break;
-			default:
-				error("Expected operator");
-				goto clear;
-		}
 
-		int p = precedence(token.kind);
+		int p;
+		if (token.kind != 'w' || (p = precedence(token.str)) == -1) {
+			error("Expected operator");
+			goto clear;
+		}
 		while (p <= precedence(ops[opc-1]))
 			pushop();
 
-		ops[opc++] = token.kind;
+		ops[opc++] = token.str;
 		nexttk();
 	valstate:
 		while (token.kind == '(') {
-			ops[opc++] = '(';
+			ops[opc++] = "(";
 			nexttk();
 		}
 		
@@ -352,7 +373,7 @@ Expr parse_expr () {
 			if (token.kind == '(') {
 				nexttk();
 				calls[callc].str = str;
-				ops[opc++] = 'f';
+				ops[opc++] = "f";
 				if (token.kind == ')') { 
 					calls[callc++].args = 0;
 				} else {
@@ -371,8 +392,7 @@ Expr parse_expr () {
 				error("Unmatched closing parenthesis");
 				goto clear;
 			}
-			char op = ops[opc-1];
-			if (op == 'f') {
+			if (strcmp(ops[opc-1], "f") == 0) {
 				callc--;
 				items[itemc].kind = 'f';
 				items[itemc].str = calls[callc].str;
@@ -386,7 +406,7 @@ Expr parse_expr () {
 		if (token.kind == ',') {
 			nexttk();
 			while (precedence(ops[opc-1])) pushop();
-			if (ops[opc-1] != 'f') {
+			if (strcmp(ops[opc-1], "f") != 0) {
 				error("Misplaced comma");
 				goto clear;
 			}
@@ -425,80 +445,120 @@ clear:
 
 
 
+//=== Vector ===//
+
+#define EMPTY_VEC ((Vector){ .len = 0, .p = 0 })
+
+void add_vec (Vector *vec, Value v) {
+	vec->len ++;
+	vec->p = realloc(vec->p, vec->len * sizeof(Value));
+	vec->p[vec->len-1] = v;
+}
+
+
 
 //=== Exec ===//
 
-//Object V0 = (Value){unitless, 0};
+typedef Object (*ftype)();
 
 Object callstack[16];
 int stacklen = 0;
 
 #define CHK_K(N, T) callstack[N].kind == T
-#define VALUE(N) (Object){.kind = 'n', ._ = {.n = {.n = N}}}
-#define GET_N(I) callstack[I]._.n.n
+#define VALUE(N) (Object){.kind = 'n', ._.n.n = N}
 
-Object V0 = VALUE(0);
+Object V0 = (Object) { .kind = 'v', ._.v.len = 0, ._.v.p = 0 };
+
+#define GET_N(NAME, I) { \
+	if (callstack[I].kind != 'n') { \
+		error("Parameter %d in %s must be a number", I+1, fname); \
+		return V0; } \
+	NAME = callstack[I]._.n.n; }
+
+//Object V0 = VALUE(0);
+
+char *fname = 0;
+
+// Operators are always called with 2 parameters
+#define OPERATOR(NAME, EXPR) Object NAME () {\
+	double a, b; \
+	GET_N(a, 0); \
+	GET_N(b, 1); \
+	return VALUE(EXPR); }
+
+OPERATOR(add, a+b)
+OPERATOR(sub, a-b)
+OPERATOR(mul, a*b)
+OPERATOR(my_div, a/b)
+OPERATOR(idiv, floor(a/b))
+OPERATOR(my_mod, fmod(a,b))
+OPERATOR(my_pow, pow(a,b))
+
+OPERATOR(eq, a==b?1:0)
+OPERATOR(lt, a<b?1:0)
+OPERATOR(gt, a>b?1:0)
+OPERATOR(neq, a!=b?1:0)
+OPERATOR(lte, a<=b?1:0)
+OPERATOR(gte, a>=b?1:0)
 
 Object my_log () {
-	if (stacklen < 1 || stacklen > 2 || !CHK_K(0, 'n') || stacklen==2 && !CHK_K(1, 'n')) {
-		error("Incorrect arguments");
+	if (stacklen < 1 || stacklen > 2) {
+		error("Argument mismatch in %s", fname);
 		return V0;
 	}
-	double x = GET_N(0);
-	double b = stacklen>1? GET_N(1) : 10;
+
+	double x, b;
+
+	GET_N(x, 0);
+	if (stacklen>1) {
+		GET_N(b, 1);
+	} else { b = 10; }
+
 	double r = log(x)/log(b);
 	return VALUE(r);
 }
 
 Object my_sin () {
-	if (stacklen != 1 || !CHK_K(0, 'n')) {
-		error("Argument mismatch");
+	if (stacklen != 1) {
+		error("%s expects 1 parameter", fname);
 		return V0;
 	}
-	double n = GET_N(0);
+	double n; GET_N(n, 0);
 	return VALUE(sin(n));
 }
 
 Object my_cos () {
-	if (stacklen != 1 || !CHK_K(0, 'n')) {
-		error("Argument mismatch");
+	if (stacklen != 1) {
+		error("%s expects 1 parameter", fname);
 		return V0;
 	}
-	double n = GET_N(0);
+	double n; GET_N(n, 0);
 	return VALUE(cos(n));
 }
 
 Object my_tan () {
-	if (stacklen != 1 || !CHK_K(0, 'n')) {
-		error("Argument mismatch");
+	if (stacklen != 1) {
+		error("%s expects 1 parameter", fname);
 		return V0;
 	}
-	double n = GET_N(0);
+	double n; GET_N(n, 0);
 	return VALUE(tan(n));
 }
 
 Object gcd () {
-	if (stacklen == 1 && CHK_K(0, 'r')) {
+	if (stacklen == 1 && CHK_K(0, 'v')) {
 		error("GCD of arrays unsupported");
 		return V0;
 	}
 	if (stacklen < 1) {
-		error("At least one argument required");
+		error("At least one parameter required");
 		return V0;
 	}
-	if (!CHK_K(0, 'n')) {
-		error("Only number arguments");
-		return V0;
-	}
-	int r = GET_N(0);
+	int r; GET_N(r, 0);
 	if (r<0) r*=-1;
 	int i;
 	for (i=1; i<stacklen; i++) {
-		if (!CHK_K(i, 'n')) {
-			error("Only number arguments");
-			return V0;
-		}
-		int a = GET_N(i);
+		int a; GET_N(a, i);
 		if (a<0) a*=-1;
 		while (a != 0) {
 			int tmp = a;
@@ -527,16 +587,21 @@ Object vector () {
 
 Object range () {
 	double low=1, high=1, step=1;
-	if (stacklen == 1 && CHK_K(0, 'n')) {
-		high = GET_N(0);
-	} else if (stacklen == 2 && CHK_K(0, 'n') && CHK_K(1, 'n')) {
-		low = GET_N(0);
-		high = GET_N(1);
-	} else if (stacklen == 3 && CHK_K(0,'n') && CHK_K(1,'n') && CHK_K(2,'n')) {
-		low = GET_N(0);
-		high = GET_N(1);
-		step = GET_N(2);
+
+	if (stacklen == 1) {
+		GET_N(high, 0);
+	} else if (stacklen == 2) {
+		GET_N(low, 0);
+		GET_N(high, 1);
+	} else if (stacklen == 3) {
+		GET_N(low, 0);
+		GET_N(high, 1);
+		GET_N(step, 2);
+	} else {
+		error("%s must have 1 to 3 parameters", fname);
+		return V0;
 	}
+
 	if (step == 0) {
 		error("Step cannot be 0");
 		return V0;
@@ -555,23 +620,87 @@ Object range () {
 	return (Object){.kind = 'v', ._.v = vec};
 }
 
-typedef Object (*ftype)();
+Object factorize () {
+	if (stacklen != 1) {
+		error("%s expects 1 parameter", fname);
+		return V0;
+	}
+	double _n; GET_N(_n, 0);
+	Vector v = EMPTY_VEC;
+
+	if (fmod(_n, 1) != 0)
+		return (Object){.kind = 'v', ._.v = v};
+
+	int i=2, n = (int)_n;
+	while (n > 1 && i<n) {
+		if (n%i == 0) {
+			add_vec(&v, (Value){.n = i});
+			n /= i;
+			i=2;
+		} else { i++; }
+	}
+	if (n > 1) add_vec(&v, (Value){.n = n});
+	return (Object){.kind = 'v', ._.v = v};
+}
+
+Object map () {
+	if (stacklen != 2 || !CHK_K(0, 'v') || !CHK_K(1, 'f')) {
+		error("%s expects a vector and a function", fname);
+		return V0;
+	}
+	Vector v = callstack[0]._.v;
+	ftype f = callstack[1]._.f;
+	int i;
+	for (i=0; i<v.len; i++) {
+		stacklen = 1;
+		callstack[0] = (Object){.kind = 'n', ._.n = v.p[i]};
+		Object r = f();
+		if (r.kind != 'n') {
+			error("mapped functions must return numbers");
+			return V0;
+		}
+		v.p[i] = r._.n;
+	}
+	return (Object){.kind = 'v', ._.v = v};
+}
+
 #define FUNCTION(F) (Object){.kind = 'f', ._ = {.f = F}}
 
 struct {
 	char *key;
 	Object o;
 } consts[] = {
+	{"pi", VALUE(3.14159265)},
+
+	{"+", FUNCTION(add)},
+	{".", FUNCTION(sub)},
+	{"*", FUNCTION(mul)},
+	{"/", FUNCTION(my_div)},
+	{"div", FUNCTION(idiv)},
+	{"rem", FUNCTION(my_mod)},
+	{"mod", FUNCTION(my_mod)},
+	{"^", FUNCTION(my_pow)},
+	{"**", FUNCTION(my_pow)},
+
+	{"=", FUNCTION(eq)},
+	{"<", FUNCTION(lt)},
+	{">", FUNCTION(gt)},
+	{"!=", FUNCTION(neq)},
+	{"<=", FUNCTION(lte)},
+	{">=", FUNCTION(gte)},
+
 	{"log", FUNCTION(my_log)},
 	{"sin", FUNCTION(my_sin)},
 	{"cos", FUNCTION(my_cos)},
 	{"tan", FUNCTION(my_tan)},
 	{"gcd", FUNCTION(gcd)},
 	{"mcd", FUNCTION(gcd)},
-	{"pi", VALUE(3.14159265)},
+
 	{"vec", FUNCTION(vector)},
 	{"vector", FUNCTION(vector)},
-	{"range", FUNCTION(range)}
+	{"range", FUNCTION(range)},
+	{"factorize", FUNCTION(factorize)},
+	{"map", FUNCTION(map)},
 };
 
 int const_count = sizeof(consts) / sizeof(*consts);
@@ -607,6 +736,8 @@ Object eval_expr (Expr expr) {
 				error("%s is not a function", item.str);
 				return V0;
 			}
+			fname = item.str;
+
 			stacklen = 0;
 			pos -= item.args;
 			while (stacklen < item.args)
@@ -616,36 +747,8 @@ Object eval_expr (Expr expr) {
 			continue;
 		}
 
-		Object b = stack[--pos];
-		Object a = stack[--pos];
-
-		if (b.kind != 'n' && a.kind != 'n') {
-			error("Operands are not numbers");
-			return V0;
-		}
-
-		Object r = {.kind = 'n'};
-		switch (item.kind) {
-			case '+':
-				r._.n.n = a._.n.n + b._.n.n;
-				break;
-			case '-':
-				r._.n.n = a._.n.n - b._.n.n;
-				break;
-			case '*':
-				r._.n.n = a._.n.n * b._.n.n;
-				break;
-			case '/':
-				r._.n.n = a._.n.n / b._.n.n;
-				break;
-			case '^':
-				r._.n.n = pow(a._.n.n, b._.n.n);
-				break;
-			default:
-				error("Unknown operator %c", item.kind);
-				return V0;
-		}
-		stack[pos++] = r;
+		error("Unknown kind %c", item.kind);
+		return V0;
 	}
 	return stack[0];
 }
