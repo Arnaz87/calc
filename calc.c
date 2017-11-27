@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 // Bigint en JS en el dominio público
 // https://github.com/Evgenus/BigInt/blob/master/src/BigInt.js
@@ -27,7 +28,7 @@ enum Unit {
 	volume, // litro
 	speed, // kmph
 	mass, // kg
-	time, // seg
+	u_time, // seg
 	information, // byte
 	money, // dólar
 };
@@ -286,10 +287,10 @@ Value parse_value () {
 		KW("km", distance, 1000);
 		KW("g",  mass, 0.0001);
 		KW("kg", mass, 1);
-		KW("s",  time, 1);
-		KW("min",time, 60);
-		KW("h",  time, 3600);
-		KW("day",time, 3600*24);
+		KW("s",  u_time, 1);
+		KW("min",u_time, 60);
+		KW("h",  u_time, 3600);
+		KW("day",u_time, 3600*24);
 		KW("rad",angle, 3.14159268);
 		#undef KW
 	}
@@ -457,6 +458,8 @@ void add_vec (Vector *vec, Value v) {
 
 
 
+
+
 //=== Exec ===//
 
 typedef Object (*ftype)();
@@ -480,26 +483,49 @@ Object V0 = (Object) { .kind = 'v', ._.v.len = 0, ._.v.p = 0 };
 char *fname = 0;
 
 // Operators are always called with 2 parameters
-#define OPERATOR(NAME, EXPR) Object NAME () {\
+#define BINOP(NAME, EXPR) Object NAME () {\
 	double a, b; \
 	GET_N(a, 0); \
 	GET_N(b, 1); \
 	return VALUE(EXPR); }
 
-OPERATOR(add, a+b)
-OPERATOR(sub, a-b)
-OPERATOR(mul, a*b)
-OPERATOR(my_div, a/b)
-OPERATOR(idiv, floor(a/b))
-OPERATOR(my_mod, fmod(a,b))
-OPERATOR(my_pow, pow(a,b))
+BINOP(add, a+b)
+BINOP(sub, a-b)
+BINOP(mul, a*b)
+BINOP(my_div, a/b)
+BINOP(idiv, floor(a/b))
+BINOP(my_mod, fmod(a,b))
+BINOP(my_pow, pow(a,b))
 
-OPERATOR(eq, a==b?1:0)
-OPERATOR(lt, a<b?1:0)
-OPERATOR(gt, a>b?1:0)
-OPERATOR(neq, a!=b?1:0)
-OPERATOR(lte, a<=b?1:0)
-OPERATOR(gte, a>=b?1:0)
+BINOP(eq, a==b?1:0)
+BINOP(lt, a<b?1:0)
+BINOP(gt, a>b?1:0)
+BINOP(neq, a!=b?1:0)
+BINOP(lte, a<=b?1:0)
+BINOP(gte, a>=b?1:0)
+
+#define UNOP(NAME, EXPR) Object NAME () {\
+	if (stacklen != 1) { \
+		error("%s expects 1 parameter", fname); \
+		return V0; \
+	} \
+	double x; GET_N(x, 0); \
+	return VALUE(EXPR); }\
+
+UNOP(my_sqrt, sqrt(x))
+UNOP(my_sin, sin(x))
+UNOP(my_cos, cos(x))
+UNOP(my_tan, tan(x))
+UNOP(my_asin, asin(x))
+UNOP(my_acos, acos(x))
+UNOP(my_atan, atan(x))
+UNOP(my_abs, fabs(x))
+UNOP(my_round, round(x))
+UNOP(my_floor, floor(x))
+UNOP(my_ceil, ceil(x))
+UNOP(my_trunc, trunc(x))
+UNOP(sign, x>0?1: x<0?-1: 0)
+
 
 Object my_log () {
 	if (stacklen < 1 || stacklen > 2) {
@@ -518,40 +544,23 @@ Object my_log () {
 	return VALUE(r);
 }
 
-Object my_sin () {
-	if (stacklen != 1) {
-		error("%s expects 1 parameter", fname);
-		return V0;
-	}
-	double n; GET_N(n, 0);
-	return VALUE(sin(n));
-}
-
-Object my_cos () {
-	if (stacklen != 1) {
-		error("%s expects 1 parameter", fname);
-		return V0;
-	}
-	double n; GET_N(n, 0);
-	return VALUE(cos(n));
-}
-
-Object my_tan () {
-	if (stacklen != 1) {
-		error("%s expects 1 parameter", fname);
-		return V0;
-	}
-	double n; GET_N(n, 0);
-	return VALUE(tan(n));
-}
-
 Object gcd () {
 	if (stacklen == 1 && CHK_K(0, 'v')) {
-		error("GCD of arrays unsupported");
-		return V0;
+		Vector v = callstack[0]._.v;
+		int i, r = v.p[0].n;
+		for (i=0; i<v.len; i++) {
+			int a = v.p[i].n;
+			if (a<0) a*=-1;
+			while (a != 0) {
+				int tmp = a;
+				a = r%a;
+				r = tmp;
+			}
+		}
+		return VALUE(r);
 	}
 	if (stacklen < 1) {
-		error("At least one parameter required");
+		error("%s requires at least one parameter");
 		return V0;
 	}
 	int r; GET_N(r, 0);
@@ -567,6 +576,23 @@ Object gcd () {
 		}
 	}
 	return VALUE(r);
+}
+
+Object mult ();
+
+Object lcm () {
+	int dv = gcd()._.n.n;
+	if (stacklen == 1 && CHK_K(0, 'v')) {
+		int ml = mult()._.n.n;
+		return VALUE(ml/dv);
+	}
+	int i, r = 1;
+	for (i=0; i<stacklen; i++) {
+		int a;
+		GET_N(a, i);
+		r *= a;
+	}
+	return VALUE(r/dv);
 }
 
 Object vector () {
@@ -664,16 +690,105 @@ Object map () {
 	return (Object){.kind = 'v', ._.v = v};
 }
 
+Object filter () {
+	if (stacklen != 2 || !CHK_K(0, 'v') || !CHK_K(1, 'f')) {
+		error("%s expects a vector and a function", fname);
+		return V0;
+	}
+	Vector v = callstack[0]._.v;
+	ftype f = callstack[1]._.f;
+
+	Vector nv = EMPTY_VEC;
+	int i;
+	for (i=0; i<v.len; i++) {
+		stacklen = 1;
+		callstack[0] = (Object){.kind = 'n', ._.n = v.p[i]};
+		Object r = f();
+		if (r.kind != 'n') {
+			error("mapped functions must return numbers");
+			return V0;
+		}
+		if (r._.n.n != 0)
+			add_vec(&nv, v.p[i]);
+	}
+	return (Object){.kind = 'v', ._.v = nv};
+}
+
+Object my_rand () {
+	if (stacklen == 0) {
+		double r = (double)rand() / RAND_MAX;
+		return VALUE(r);
+	} else if (stacklen == 1 && CHK_K(0, 'v')) {
+		Vector v = callstack[0]._.v;
+		int i = rand() % v.len;
+		return (Object){.kind = 'n', ._.n = v.p[i]};
+	} else {
+		error("%s expects 0 parameters or a vector");
+		return V0;
+	}
+}
+
+Object len () {
+	if (stacklen != 1 || !CHK_K(0, 'v')) {
+		error("%s expects a vector");
+		return V0;
+	}
+	Vector v = callstack[0]._.v;
+	return VALUE(v.len);
+}
+
+Object sum () {
+	if (stacklen != 1 || !CHK_K(0, 'v')) {
+		error("%s expects a vector");
+		return V0;
+	}
+	Vector v = callstack[0]._.v;
+	double sum = 0;
+	int i;
+	for (i=0; i<v.len; i++)
+		sum += v.p[i].n;
+	return VALUE(sum);
+}
+
+Object mult () {
+	if (stacklen != 1 || !CHK_K(0, 'v')) {
+		error("%s expects a vector");
+		return V0;
+	}
+	Vector v = callstack[0]._.v;
+	double r = 1;
+	int i;
+	for (i=0; i<v.len; i++)
+		r *= v.p[i].n;
+	return VALUE(r);
+}
+
+Object mean () {
+	if (stacklen != 1 || !CHK_K(0, 'v')) {
+		error("%s expects a vector");
+		return V0;
+	}
+	Vector v = callstack[0]._.v;
+	double sum = 0;
+	int i;
+	for (i=0; i<v.len; i++)
+		sum += v.p[i].n;
+	return VALUE(sum / v.len);
+}
+
 #define FUNCTION(F) (Object){.kind = 'f', ._ = {.f = F}}
+#define FF(SYM, FNM) { #SYM, (Object){.kind = 'f', ._.f = FNM} }
 
 struct {
 	char *key;
 	Object o;
 } consts[] = {
 	{"pi", VALUE(3.14159265)},
+	{"e", VALUE(2.18281828)},
+	{"phi", VALUE(1.68)},
 
 	{"+", FUNCTION(add)},
-	{".", FUNCTION(sub)},
+	{"-", FUNCTION(sub)},
 	{"*", FUNCTION(mul)},
 	{"/", FUNCTION(my_div)},
 	{"div", FUNCTION(idiv)},
@@ -689,18 +804,39 @@ struct {
 	{"<=", FUNCTION(lte)},
 	{">=", FUNCTION(gte)},
 
-	{"log", FUNCTION(my_log)},
 	{"sin", FUNCTION(my_sin)},
 	{"cos", FUNCTION(my_cos)},
 	{"tan", FUNCTION(my_tan)},
+	{"asin", FUNCTION(my_asin)},
+	{"acos", FUNCTION(my_acos)},
+	{"atan", FUNCTION(my_atan)},
+
+	FF(sign, sign),
+	FF(abs, my_abs),
+	FF(round, my_round),
+	FF(floor, my_floor),
+	FF(ceil, my_ceil),
+	FF(int, my_trunc),
+
+	{"log", FUNCTION(my_log)},
+	{"rand", FUNCTION(my_rand)},
+
 	{"gcd", FUNCTION(gcd)},
 	{"mcd", FUNCTION(gcd)},
+	{"lcm", FUNCTION(lcm)},
+	{"mcm", FUNCTION(lcm)},
 
 	{"vec", FUNCTION(vector)},
 	{"vector", FUNCTION(vector)},
 	{"range", FUNCTION(range)},
 	{"factorize", FUNCTION(factorize)},
 	{"map", FUNCTION(map)},
+	FF(filter, filter),
+
+	FF(len, len),
+	FF(sum, sum),
+	FF(mult, mult),
+	FF(mean, mean),
 };
 
 int const_count = sizeof(consts) / sizeof(*consts);
@@ -758,6 +894,8 @@ void main (int in_argc, char** in_argv) {
 	argv = in_argv;
 
 	prepareargs();
+
+	srand(time(0));
 
 	printf("Calc\n");
 
